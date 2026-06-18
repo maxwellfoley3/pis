@@ -17,54 +17,55 @@ function extractToken(req: NextRequest): string {
   return new URL(req.url).searchParams.get("token")?.trim() ?? "";
 }
 
-// Pull a text fragment out of whatever shape the client sent — JSON (any common
-// key, or the first string value), urlencoded/form, or a raw text body.
+// Pull a text fragment out of whatever shape the client sent — JSON (a known
+// text key), urlencoded/form, raw text body, or a query param. Deliberately does
+// NOT fall back to arbitrary values (e.g. `source`) or the raw JSON string, so a
+// misconfigured client that sends empty text fails loudly with 400 rather than
+// silently capturing the wrong thing.
+const TEXT_KEYS = ["text", "note", "content", "body", "input", "value"];
+
+function fromQuery(url: URL): string {
+  for (const k of TEXT_KEYS) {
+    const v = url.searchParams.get(k);
+    if (v && v.trim()) return v.trim();
+  }
+  return "";
+}
+
 function pickText(raw: string, ctype: string, url: URL): { text: string; source: string } {
   let source = "ios-shortcut";
-  const keys = ["text", "note", "content", "body", "input", "value"];
 
   if (ctype.includes("application/json")) {
     try {
       const j = JSON.parse(raw);
       if (j && typeof j === "object") {
-        if (typeof j.source === "string") source = j.source;
-        for (const k of keys) {
+        if (typeof j.source === "string" && j.source.trim()) source = j.source.trim();
+        for (const k of TEXT_KEYS) {
           if (typeof j[k] === "string" && j[k].trim()) return { text: j[k].trim(), source };
         }
-        // fall back to the first non-empty string value in the object
-        for (const v of Object.values(j)) {
-          if (typeof v === "string" && v.trim()) return { text: v.trim(), source };
-        }
-      } else if (typeof j === "string" && j.trim()) {
-        return { text: j.trim(), source };
+        // Valid JSON but no non-empty text key → empty (do NOT capture the raw JSON).
+        return { text: fromQuery(url), source };
       }
+      if (typeof j === "string" && j.trim()) return { text: j.trim(), source };
     } catch {
-      // not valid JSON despite the header — treat the raw body as the text
+      // Header says JSON but body isn't valid JSON — treat the raw body as text.
       if (raw.trim()) return { text: raw.trim(), source };
     }
+    return { text: fromQuery(url), source };
   }
 
   if (ctype.includes("urlencoded") || ctype.includes("form")) {
-    try {
-      const p = new URLSearchParams(raw);
-      if (p.get("source")) source = p.get("source")!;
-      for (const k of keys) {
-        const v = p.get(k);
-        if (v && v.trim()) return { text: v.trim(), source };
-      }
-    } catch {
-      /* fall through */
+    const p = new URLSearchParams(raw);
+    if (p.get("source")?.trim()) source = p.get("source")!.trim();
+    for (const k of TEXT_KEYS) {
+      const v = p.get(k);
+      if (v && v.trim()) return { text: v.trim(), source };
     }
+    return { text: fromQuery(url), source };
   }
 
-  // query string fallback (e.g. ?text=...)
-  for (const k of keys) {
-    const v = url.searchParams.get(k);
-    if (v && v.trim()) return { text: v.trim(), source };
-  }
-
-  // last resort: the entire raw body is the fragment
-  return { text: raw.trim(), source };
+  // Plain text / unknown content type: the raw body is the fragment.
+  return { text: raw.trim() || fromQuery(url), source };
 }
 
 export async function POST(req: NextRequest) {
