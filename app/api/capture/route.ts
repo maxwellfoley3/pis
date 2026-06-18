@@ -17,26 +17,54 @@ function extractToken(req: NextRequest): string {
   return new URL(req.url).searchParams.get("token")?.trim() ?? "";
 }
 
-async function readText(req: NextRequest): Promise<{ text: string; source: string }> {
-  const ctype = req.headers.get("content-type") ?? "";
-  let text = "";
+// Pull a text fragment out of whatever shape the client sent — JSON (any common
+// key, or the first string value), urlencoded/form, or a raw text body.
+function pickText(raw: string, ctype: string, url: URL): { text: string; source: string } {
   let source = "ios-shortcut";
-  try {
-    if (ctype.includes("application/json")) {
-      const b = await req.json();
-      text = String(b.text ?? b.note ?? b.content ?? "");
-      if (b.source) source = String(b.source);
-    } else if (ctype.includes("form")) {
-      const f = await req.formData();
-      text = String(f.get("text") ?? f.get("note") ?? f.get("content") ?? "");
-      if (f.get("source")) source = String(f.get("source"));
-    } else {
-      text = await req.text();
+  const keys = ["text", "note", "content", "body", "input", "value"];
+
+  if (ctype.includes("application/json")) {
+    try {
+      const j = JSON.parse(raw);
+      if (j && typeof j === "object") {
+        if (typeof j.source === "string") source = j.source;
+        for (const k of keys) {
+          if (typeof j[k] === "string" && j[k].trim()) return { text: j[k].trim(), source };
+        }
+        // fall back to the first non-empty string value in the object
+        for (const v of Object.values(j)) {
+          if (typeof v === "string" && v.trim()) return { text: v.trim(), source };
+        }
+      } else if (typeof j === "string" && j.trim()) {
+        return { text: j.trim(), source };
+      }
+    } catch {
+      // not valid JSON despite the header — treat the raw body as the text
+      if (raw.trim()) return { text: raw.trim(), source };
     }
-  } catch {
-    text = "";
   }
-  return { text: text.trim(), source };
+
+  if (ctype.includes("urlencoded") || ctype.includes("form")) {
+    try {
+      const p = new URLSearchParams(raw);
+      if (p.get("source")) source = p.get("source")!;
+      for (const k of keys) {
+        const v = p.get(k);
+        if (v && v.trim()) return { text: v.trim(), source };
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // query string fallback (e.g. ?text=...)
+  for (const k of keys) {
+    const v = url.searchParams.get(k);
+    if (v && v.trim()) return { text: v.trim(), source };
+  }
+
+  // last resort: the entire raw body is the fragment
+  return { text: raw.trim(), source };
 }
 
 export async function POST(req: NextRequest) {
@@ -44,8 +72,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
-  const { text, source } = await readText(req);
-  if (!text) return NextResponse.json({ error: "empty capture" }, { status: 400 });
+  const url = new URL(req.url);
+  const ctype = req.headers.get("content-type") ?? "";
+  const raw = await req.text();
+  const { text, source } = pickText(raw, ctype, url);
+
+  // Diagnostic log so we can see exactly what a client (e.g. iOS Shortcut) sends.
+  console.log("[capture]", {
+    ctype,
+    rawLen: raw.length,
+    rawPreview: raw.slice(0, 300),
+    parsedChars: text.length,
+  });
+
+  if (!text) {
+    return NextResponse.json(
+      { error: "empty capture", hint: "send { \"text\": \"...\" } as JSON, or a raw text body", got: { ctype, rawLen: raw.length } },
+      { status: 400 },
+    );
+  }
 
   const now = new Date();
   const day = now.toISOString().slice(0, 10);
@@ -54,12 +99,7 @@ export async function POST(req: NextRequest) {
   const entry = `\n## ${now.toISOString()} · ${source}\n\n${text}\n`;
   await appendFile(file, entry, "utf8");
 
-  return NextResponse.json({
-    ok: true,
-    capturedAt: now.toISOString(),
-    file: `${day}.md`,
-    chars: text.length,
-  });
+  return NextResponse.json({ ok: true, capturedAt: now.toISOString(), file: `${day}.md`, chars: text.length });
 }
 
 export async function GET() {
