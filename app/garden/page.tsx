@@ -1,11 +1,43 @@
 import Link from "next/link";
 import { listNotes } from "@/lib/garden/store";
+import { computeGardenStats, formatDuration, type GardenStats } from "@/lib/garden/stats";
 import { NewNoteForm } from "./new-note-form";
 
 export const dynamic = "force-dynamic";
 
+function CapacityBar({ stats }: { stats: GardenStats }) {
+  const projection =
+    stats.daysToFull === 0
+      ? "exceeds the context window"
+      : stats.daysToFull == null
+        ? "no growth yet"
+        : `exceeds context in ${formatDuration(stats.daysToFull)}${stats.earlyEstimate ? " (early est.)" : ""}`;
+
+  return (
+    <div className="mb-6 rounded-xl border border-black/10 dark:border-white/10 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-xs">
+        <span className="tabular-nums text-black/60 dark:text-white/60">
+          <span className="font-medium text-foreground">{stats.tokens.toLocaleString()}</span> /{" "}
+          {stats.contextWindow.toLocaleString()} tokens · {(stats.pct * 100).toFixed(2)}% of {stats.model} context
+        </span>
+        <span className="tabular-nums text-black/40 dark:text-white/40">{projection}</span>
+      </div>
+      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/15">
+        <div
+          className="h-full rounded-full bg-foreground"
+          style={{ width: `${Math.max(stats.pct * 100, 0.4)}%` }}
+        />
+      </div>
+      <div className="mt-1.5 text-[11px] tabular-nums text-black/40 dark:text-white/40">
+        ~{Math.round(stats.tokensPerDay).toLocaleString()} tokens/day · estimated (~4 chars/token)
+      </div>
+    </div>
+  );
+}
+
 export default async function GardenPage() {
   const notes = await listNotes();
+  const stats = computeGardenStats(notes, Date.now());
 
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 sm:py-14">
@@ -20,6 +52,8 @@ export default async function GardenPage() {
           {notes.length} {notes.length === 1 ? "note" : "notes"}
         </span>
       </header>
+
+      <CapacityBar stats={stats} />
 
       <div className="mb-6">
         <NewNoteForm />
