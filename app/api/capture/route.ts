@@ -10,6 +10,16 @@ const STREAM_DIR =
   process.env.STREAM_DIR ?? path.resolve(process.cwd(), "../../documents/pis/stream");
 const CAPTURE_TOKEN = process.env.CAPTURE_TOKEN;
 
+// A capture starting with `/log` is routed to LifeOS's daily log instead of the
+// Stream. LifeOS owns the log format and the "current day" rule (its own 7am
+// boundary), so we forward to its endpoint rather than touch its data files.
+const LIFEOS_LOG_URL =
+  process.env.LIFEOS_LOG_URL ?? "http://localhost:3001/api/log/add";
+
+// Matches a `/log` command word and captures the rest as the entry. Requires a
+// word boundary so `/logging ...` is NOT treated as a command.
+const LOG_COMMAND = /^\/log\b[ \t]*([\s\S]*)$/;
+
 function extractToken(req: NextRequest): string {
   const auth = req.headers.get("authorization") ?? "";
   const bearer = auth.replace(/^Bearer\s+/i, "").trim();
@@ -68,6 +78,32 @@ function pickText(raw: string, ctype: string, url: URL): { text: string; source:
   return { text: raw.trim() || fromQuery(url), source };
 }
 
+async function appendToStream(text: string, source: string, now: Date): Promise<string> {
+  const day = now.toISOString().slice(0, 10);
+  await mkdir(STREAM_DIR, { recursive: true });
+  const file = path.join(STREAM_DIR, `${day}.md`);
+  const entry = `\n## ${now.toISOString()} · ${source}\n\n${text}\n`;
+  await appendFile(file, entry, "utf8");
+  return day;
+}
+
+// Forward a `/log` entry to LifeOS. Time-boxed so a down/slow LifeOS can't hang
+// the capture request; caller handles failure by falling back to the Stream.
+async function forwardToLifeOsLog(entry: string): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    return await fetch(LIFEOS_LOG_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ entry }),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function POST(req: NextRequest) {
   if (CAPTURE_TOKEN && extractToken(req) !== CAPTURE_TOKEN) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
@@ -93,12 +129,43 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // `/log ...` → LifeOS daily log instead of the Stream.
+  const logMatch = text.match(LOG_COMMAND);
+  if (logMatch) {
+    const logEntry = logMatch[1].trim();
+    if (!logEntry) {
+      return NextResponse.json(
+        { error: "empty /log entry", hint: "write `/log <what happened>`" },
+        { status: 400 },
+      );
+    }
+    try {
+      const res = await forwardToLifeOsLog(logEntry);
+      if (!res.ok) throw new Error(`LifeOS responded ${res.status}`);
+      const data = (await res.json().catch(() => ({}))) as { time?: string };
+      return NextResponse.json({
+        ok: true,
+        routedTo: "lifeos-log",
+        time: data.time ?? null,
+        chars: logEntry.length,
+      });
+    } catch (err) {
+      // Never lose a capture: if LifeOS is unreachable, keep it in the Stream
+      // (with the `/log` prefix intact) and report the fallback.
+      const now = new Date();
+      const day = await appendToStream(text, source, now);
+      return NextResponse.json({
+        ok: true,
+        routedTo: "stream-fallback",
+        warning: `LifeOS log unreachable (${(err as Error).message}); saved to Stream instead`,
+        file: `${day}.md`,
+        chars: text.length,
+      });
+    }
+  }
+
   const now = new Date();
-  const day = now.toISOString().slice(0, 10);
-  await mkdir(STREAM_DIR, { recursive: true });
-  const file = path.join(STREAM_DIR, `${day}.md`);
-  const entry = `\n## ${now.toISOString()} · ${source}\n\n${text}\n`;
-  await appendFile(file, entry, "utf8");
+  const day = await appendToStream(text, source, now);
 
   return NextResponse.json({ ok: true, capturedAt: now.toISOString(), file: `${day}.md`, chars: text.length });
 }
@@ -106,6 +173,6 @@ export async function POST(req: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     ok: true,
-    hint: "POST { text } here (Bearer token) to capture a fragment into the Stream.",
+    hint: "POST { text } here (Bearer token) to capture a fragment into the Stream. Prefix with `/log ` to route it to LifeOS's daily log instead.",
   });
 }
