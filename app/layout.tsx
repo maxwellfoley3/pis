@@ -38,6 +38,9 @@ export default function RootLayout({
             <Link href="/garden" className="text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white">
               Garden
             </Link>
+            <Link href="/marshall" className="text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white">
+              Marshall
+            </Link>
           </div>
         </nav>
         <div className="flex-1">{children}</div>
