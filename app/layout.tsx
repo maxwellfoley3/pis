@@ -41,6 +41,9 @@ export default function RootLayout({
             <Link href="/marshall" className="text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white">
               Marshall
             </Link>
+            <Link href="/projects" className="text-black/60 hover:text-black dark:text-white/60 dark:hover:text-white">
+              Projects
+            </Link>
           </div>
         </nav>
         <div className="flex-1">{children}</div>
