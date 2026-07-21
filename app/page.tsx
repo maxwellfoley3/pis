@@ -1,4 +1,5 @@
 import { readStream, type Fragment } from "@/lib/stream";
+import { CaptureBox } from "./capture-box";
 
 export const dynamic = "force-dynamic"; // always re-read the Stream on load
 
@@ -46,13 +47,11 @@ export default async function Home() {
         </span>
       </header>
 
+      <CaptureBox />
+
       {fragments.length === 0 ? (
         <div className="rounded-xl border border-dashed border-black/15 dark:border-white/15 p-10 text-center text-sm text-black/50 dark:text-white/50">
-          Nothing captured yet. Fire a fragment at{" "}
-          <code className="rounded bg-black/[.05] dark:bg-white/[.06] px-1.5 py-0.5">
-            POST /api/capture
-          </code>
-          .
+          Nothing captured yet. Fire your first fragment above.
         </div>
       ) : (
         <ul className="flex flex-col gap-3">
